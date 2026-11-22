@@ -23,7 +23,7 @@ def captured(monkeypatch):
 
     async def fake_stream(messages, tools):
         calls.append(messages)
-        assert [t.name for t in tools] == ["query_dataset", "run_python", "run_shell"]
+        assert [t.name for t in tools] == ["query_dataset", "run_python", "predict_defect", "search_manual", "run_shell"]
         for piece in ["분석 ", "계획", "입니다."]:
             yield {"type": "token", "text": piece}
 

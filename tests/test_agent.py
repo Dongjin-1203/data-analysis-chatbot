@@ -116,3 +116,64 @@ def test_plot_image_url_is_served():
     res = client.get(images[0])
     assert res.status_code == 200 and res.headers["content-type"] == "image/png"
     assert client.get(f"/api/files/{sid}/..%2Fchat.db").status_code == 404
+
+
+# ---------- 3단계: 예측 + 매뉴얼 검색 ----------
+ALCU = Path(__file__).parent / "fixtures" / "alcu_sample.csv"
+
+
+def _session_with(path: Path) -> str:
+    sid = store.create()
+    content = path.read_bytes()
+    df = load_dataframe(path.name, content)
+    store.save_data(sid, path.name, content, df, summarize(df))
+    return sid
+
+
+def test_predict_then_search_manual(monkeypatch, tmp_path):
+    from app import rag
+    from tests.test_rag import fake_embed
+
+    monkeypatch.setattr(rag, "_index", rag.ManualIndex(embed_fn=fake_embed, cache_path=tmp_path / "emb.json"))
+    sid = _session_with(ALCU)
+    model = ScriptedModel(
+        responses=[
+            _call("predict_defect", {"wafer_id": "V612744112"}, "p1"),
+            _call("search_manual", {"query": "불량 의심 웨이퍼 처리 흐름 Hold 재측정"}, "s1"),
+            AIMessage(content="불량 의심입니다. [MAN-01 2. 불량 의심 웨이퍼 처리 흐름]"),
+        ]
+    )
+    events = _run(model, sid)
+    ends = {e["name"]: e for e in events if e["type"] == "tool_end"}
+
+    pred = ends["predict_defect"]
+    assert pred["artifact"]["ok"] is True
+    assert pred["artifact"]["result"]["prediction"] == "불량 의심"
+    assert "불량 점수" in pred["output"] and "임계값" in pred["output"]
+
+    manual = ends["search_manual"]
+    results = manual["artifact"]["results"]
+    assert results[0]["doc_id"] == "MAN-01" and results[0]["url"] == "/manuals/MAN-01.md"
+    assert "[MAN-01 " in manual["output"]
+
+
+def test_predict_unsupported_data_returns_reason_and_code():
+    sid = _session_with(FIXTURE)  # 공정 센서 열이 없는 다른 형식의 데이터
+    model = ScriptedModel(responses=[_call("predict_defect", {"row_index": 0}, "p1"), AIMessage(content="처리할 수 없습니다.")])
+    events = _run(model, sid)
+    end = next(e for e in events if e["type"] == "tool_end")
+    assert end["artifact"]["ok"] is False and end["artifact"]["kind"] == "unsupported_input"
+    assert end["output"].startswith("[예측 불가]")
+    assert "```python" in end["output"] and "defect_mlp.pt" in end["output"]
+
+
+def test_manual_original_is_served():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    res = client.get("/manuals/MAN-03.md")
+    assert res.status_code == 200 and "챔버 압력" in res.text
+    assert client.get("/manuals/..%2Fpyproject.toml").status_code == 404
+    assert client.get("/manuals/NOPE.md").status_code == 404

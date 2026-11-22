@@ -158,7 +158,61 @@ function renderMarkdown(text) {
 }
 
 // ---------- 에이전트 실행 과정 (텍스트 + 도구 카드) ----------
-const TOOL_LABELS = { query_dataset: "데이터 조회", run_python: "코드 실행", run_shell: "터미널 명령" };
+const TOOL_LABELS = {
+  query_dataset: "데이터 조회",
+  run_python: "코드 실행",
+  run_shell: "터미널 명령",
+  predict_defect: "불량 예측",
+  search_manual: "매뉴얼 검색",
+};
+
+function predictionHtml(r) {
+  const verdict = r.label ? "negative" : "positive";
+  const record = Object.entries(r.record || {})
+    .map(([k, v]) => `${escapeHtml(k)}=${escapeHtml(v)}`)
+    .join(" · ");
+  const actual =
+    r.actual_label === null || r.actual_label === undefined
+      ? ""
+      : `<span class="muted">데이터의 실제 quality_overall: <strong>${r.actual_label}</strong> (${r.actual_label ? "불량" : "양품"})</span>`;
+  const rows = (r.top_deviations || [])
+    .map(
+      (d) =>
+        `<tr><td>${escapeHtml(d.feature)}</td><td style="text-align:right">${escapeHtml(d.value ?? "결측")}</td>` +
+        `<td style="text-align:right">${escapeHtml(d.train_mean)}</td><td style="text-align:right">${escapeHtml(d.z)}</td></tr>`
+    )
+    .join("");
+  const m = r.model || {};
+  return (
+    `<div class="prediction">` +
+    `<div class="prediction-main"><span class="badge ${verdict}">${escapeHtml(r.prediction)}</span>` +
+    `<span>불량 점수 <strong>${escapeHtml(r.score)}</strong> / 임계값 ${escapeHtml(r.threshold)}</span></div>` +
+    `<div class="muted">${record}</div>` +
+    actual +
+    `<div class="md-table"><table><thead><tr><th>학습 분포 대비 많이 벗어난 입력 열</th><th>값</th><th>학습 평균</th><th>z</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+    `<div class="muted">모델 ${escapeHtml(m.name || "")} · 입력 열 ${escapeHtml(m.n_features || "")}개 · 테스트 ROC-AUC ${escapeHtml(m.test_roc_auc)} · F1 ${escapeHtml(m.test_f1)}` +
+    (r.imputed_features ? ` · 결측 대체 ${r.imputed_features}개` : "") +
+    `</div></div>`
+  );
+}
+
+function manualResultsHtml(results) {
+  if (!results.length) return `<div class="muted">검색 결과가 없습니다.</div>`;
+  return (
+    `<ul class="manual-results">` +
+    results
+      .map(
+        (r) =>
+          `<li><div class="manual-head"><span class="badge">${escapeHtml(r.doc_id)}</span>` +
+          `<span class="manual-title">${escapeHtml(r.title)} · ${escapeHtml(r.section)}</span>` +
+          `<span class="muted">유사도 ${escapeHtml(r.score)}</span>` +
+          `<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">원문 보기</a></div>` +
+          `<details><summary>검색된 내용</summary><pre class="tool-output">${escapeHtml(r.text)}</pre></details></li>`
+      )
+      .join("") +
+    `</ul>`
+  );
+}
 
 function toolStatus(block) {
   if (block.status === "running") return ["cautionary", "실행 중"];
@@ -187,7 +241,14 @@ function toolCardHtml(block) {
   let result = "";
   if (block.status !== "running") {
     const art = block.artifact;
-    if (art) {
+    if (block.name === "predict_defect" && art && art.ok && art.result) {
+      result = predictionHtml(art.result);
+    } else if (block.name === "search_manual" && art && art.ok) {
+      result = manualResultsHtml(art.results || []);
+    } else if (block.name === "predict_defect" && art && !art.ok) {
+      // 예측 불가: 이유와 별도 실행 코드 예시는 도구 출력(텍스트)에 들어 있다
+      result = `<pre class="tool-output">${escapeHtml(block.output || art.error || "")}</pre>`;
+    } else if (art) {
       const text = [art.output, art.error ? `오류: ${art.error}` : ""].filter((t) => t && t.trim()).join("\n");
       if (text) result += `<pre class="tool-output">${escapeHtml(text)}</pre>`;
       for (const src of art.images || []) result += `<img class="tool-image" src="${escapeHtml(src)}" alt="실행 결과 그래프" />`;

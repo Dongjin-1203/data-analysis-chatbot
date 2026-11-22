@@ -454,3 +454,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 .md-table table { border-collapse: collapse; font-size: 14px; line-height: 20px; min-width: 50%; }
 .md-table th, .md-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
 .md-table th { font-size: 13px; font-weight: 500; color: var(--muted-foreground); background: var(--muted); }
+
+/* ---------- 3단계: 불량 예측 · 매뉴얼 검색 카드 ---------- */
+.muted { font-size: 13px; line-height: 18px; color: var(--muted-foreground); }
+.prediction { display: flex; flex-direction: column; gap: 6px; }
+.prediction-main { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.prediction .md-table table { font-size: 13px; }
+.manual-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.manual-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.manual-title { font-size: 14px; font-weight: 500; }
+.manual-head a { margin-left: auto; font-size: 13px; color: var(--primary); text-decoration: none; }
+.manual-head a:hover { text-decoration: underline; }
