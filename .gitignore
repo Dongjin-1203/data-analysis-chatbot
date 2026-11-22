@@ -221,3 +221,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 챗봇 대화 DB와 업로드 파일
+storage/

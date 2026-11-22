@@ -32,3 +32,20 @@ def test_summary_contains_structure_and_missing():
     assert "temperature" in text and "pressure" in text
     assert "수치형 통계" in text
     assert "범주형 상위 값" in text
+
+
+def test_wide_table_keeps_all_column_names():
+    import numpy as np
+    import pandas as pd
+
+    data = {f"SENSOR_{i}_A": np.random.rand(50) for i in range(300)}
+    data["quality_overall"] = np.random.randint(0, 2, 50)
+    data["quality_thickness"] = np.random.choice(["Good", "Bad"], 50)
+    df = pd.DataFrame(data)
+
+    text = summarize(df)
+    assert "열 301개" in text or "열 302개" in text
+    assert "SENSOR_0_A" in text and "SENSOR_299_A" in text  # 마지막 열까지 이름이 남는다
+    assert "quality_thickness: " in text and "Good" in text
+    assert "quality_overall: " in text
+    assert "앞 30개만 표시" in text

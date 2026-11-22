@@ -35,10 +35,12 @@ app/
   main.py           FastAPI 앱, 정적 파일 제공
   config.py         환경 설정(.env)
   llm.py            LLM 호출 단일 지점(OpenAI SDK 스트리밍)
-  prompts.py        분석 절차 시스템 프롬프트
-  sessions.py       메모리 세션(대화 기록, 업로드 데이터)
+  prompts.py        시스템 프롬프트 로드, 메시지 구성
+  sessions.py       SQLite 세션 저장소(대화 기록, 업로드 데이터) → storage/
   data_summary.py   CSV/Excel 읽기 및 요약
   routers/          /api/session, /api/upload, /api/chat(SSE)
+prompts/
+  system_prompt.md  시스템 프롬프트 (수정하면 다음 질문부터 바로 반영)
 static/             채팅 UI (HTML/CSS/JS)
 data/               실습 데이터 위치
 tests/              pytest

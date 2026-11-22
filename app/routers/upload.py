@@ -23,14 +23,5 @@ async def upload(session_id: str = Form(...), file: UploadFile = File(...)) -> d
         raise HTTPException(status_code=400, detail=f"파일을 읽을 수 없습니다: {e}") from e
 
     summary = summarize(df)
-    session = store.get_or_create(session_id)
-    session.dataframe = df
-    session.data_summary = summary
-    session.filename = filename
-
-    return {
-        "filename": filename,
-        "rows": int(df.shape[0]),
-        "columns": [str(c) for c in df.columns],
-        "summary": summary,
-    }
+    meta = store.save_data(session_id, filename, content, df, summary)
+    return {**meta, "summary": summary}

@@ -1,74 +1,177 @@
 const $ = (id) => document.getElementById(id);
 
+const chatEl = $("chat");
 const messagesEl = $("messages");
 const composer = $("composer");
 const input = $("input");
 const sendBtn = $("send-btn");
 const fileInput = $("file-input");
-const uploadStatus = $("upload-status");
+const welcomeHtml = $("welcome").outerHTML;
 
 let sessionId = localStorage.getItem("session_id");
+let busy = false;
 
 async function ensureSession(forceNew = false) {
   if (sessionId && !forceNew) return sessionId;
   const res = await fetch("/api/session", { method: "POST" });
   const data = await res.json();
-  sessionId = data.session_id;
-  localStorage.setItem("session_id", sessionId);
+  setSession(data.session_id);
   return sessionId;
 }
 
+function setSession(id) {
+  sessionId = id;
+  localStorage.setItem("session_id", id);
+}
+
+// ---------- 대화 기록 ----------
+async function refreshHistory() {
+  const res = await fetch("/api/sessions");
+  const sessions = res.ok ? await res.json() : [];
+  const nav = $("history");
+  if (!sessions.length) {
+    nav.innerHTML = '<p class="history-empty">저장된 대화가 없습니다.</p>';
+    return;
+  }
+  nav.innerHTML = sessions
+    .map(
+      (s) =>
+        `<div class="nav-item${s.id === sessionId ? " active" : ""}" data-id="${escapeHtml(s.id)}" role="button" tabindex="0" title="${escapeHtml(s.title)}">` +
+        `<img src="/static/icons/list.svg" width="18" height="18" alt="" />` +
+        `<span class="title">${escapeHtml(s.title)}</span>` +
+        `<button class="delete-btn" type="button" title="대화 삭제" aria-label="대화 삭제">✕</button>` +
+        `</div>`
+    )
+    .join("");
+}
+
+$("history").addEventListener("click", async (e) => {
+  const item = e.target.closest(".nav-item");
+  if (!item || busy) return;
+  const id = item.dataset.id;
+
+  if (e.target.closest(".delete-btn")) {
+    if (!confirm("이 대화와 업로드한 데이터를 삭제할까요? 삭제하면 되돌릴 수 없습니다.")) return;
+    await fetch(`/api/session/${id}`, { method: "DELETE" });
+    if (id === sessionId) await startNewChat();
+    else await refreshHistory();
+    return;
+  }
+  if (id !== sessionId) await loadSession(id);
+});
+
+// 저장된 세션을 불러와 화면을 복원한다. 세션이 없으면 false.
+async function loadSession(id) {
+  const res = await fetch(`/api/session/${id}`);
+  if (!res.ok) return false;
+  const session = await res.json();
+
+  setSession(id);
+  messagesEl.innerHTML = welcomeHtml;
+  clearDataInSidebar();
+
+  for (const m of session.messages) {
+    if (m.role === "user") addMessage("user", escapeHtml(m.content));
+    else if (m.role === "assistant") addMessage("assistant", renderMarkdown(m.content));
+    else if (m.role === "file") {
+      const summary = session.data && session.data.filename === m.data.filename ? session.data.summary : "";
+      addMessage("assistant", fileCardHtml({ ...m.data, summary }));
+    }
+  }
+  if (session.data) showDataInSidebar(session.data);
+  await refreshHistory();
+  scrollToBottom();
+  return true;
+}
+
+async function startNewChat() {
+  await ensureSession(true);
+  messagesEl.innerHTML = welcomeHtml;
+  clearDataInSidebar();
+  await refreshHistory();
+  input.focus();
+}
+
+// ---------- 테마 ----------
+$("theme-btn").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+});
+
 // ---------- 렌더링 ----------
 function escapeHtml(text) {
-  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function renderInline(text) {
   return escapeHtml(text)
     .replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>')
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/^#{1,6} (.+)$/gm, "<strong>$1</strong>");
 }
 
 // 코드블록(```)과 일반 텍스트를 나눠 렌더링한다. 스트리밍 중 닫히지 않은 블록도 처리한다.
 function renderMarkdown(text) {
-  const parts = text.split(/```/);
-  return parts
+  return text
+    .split(/```/)
     .map((part, i) => {
       if (i % 2 === 0) return renderInline(part);
       const newline = part.indexOf("\n");
+      const lang = newline >= 0 ? part.slice(0, newline).trim() : "";
       const code = newline >= 0 ? part.slice(newline + 1) : part;
-      return `<div class="code-block"><button class="copy-btn" type="button">복사</button><pre><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre></div>`;
+      return (
+        `<div class="code-block"><div class="code-head"><span>${escapeHtml(lang || "code")}</span>` +
+        `<button class="copy-btn" type="button">복사</button></div>` +
+        `<pre><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre></div>`
+      );
     })
     .join("");
 }
 
+function scrollToBottom() {
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function addMessage(role, html) {
+  $("welcome")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = `message ${role}`;
+
+  const avatar = document.createElement("div");
+  avatar.className = role === "user" ? "avatar" : "avatar ai";
+  avatar.textContent = role === "user" ? "나" : "AI";
+  wrap.appendChild(avatar);
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.innerHTML = html;
+  wrap.appendChild(bubble);
+
+  messagesEl.appendChild(wrap);
+  scrollToBottom();
+  return { wrap, bubble };
+}
+
 messagesEl.addEventListener("click", async (e) => {
+  const suggestion = e.target.closest(".suggestion");
+  if (suggestion) {
+    input.value = suggestion.querySelector(".text").textContent;
+    composer.requestSubmit();
+    return;
+  }
   if (!e.target.classList.contains("copy-btn")) return;
-  const code = e.target.parentElement.querySelector("code").textContent;
+  const code = e.target.closest(".code-block").querySelector("code").textContent;
   await navigator.clipboard.writeText(code);
   e.target.textContent = "복사됨";
   setTimeout(() => (e.target.textContent = "복사"), 1500);
 });
 
-function addMessage(role, text = "") {
-  const wrap = document.createElement("div");
-  wrap.className = `message ${role}`;
-  const bubble = document.createElement("div");
-  bubble.className = "bubble";
-  if (role === "user") bubble.textContent = text;
-  else bubble.innerHTML = renderMarkdown(text);
-  wrap.appendChild(bubble);
-  messagesEl.appendChild(wrap);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-  return { wrap, bubble };
-}
-
 // ---------- 채팅 (SSE 스트리밍) ----------
 async function sendMessage(message) {
   await ensureSession();
-  addMessage("user", message);
-  const { wrap, bubble } = addMessage("assistant", "");
-  bubble.textContent = "…";
+  addMessage("user", escapeHtml(message));
+  const { wrap, bubble } = addMessage("assistant", '<div class="typing"><span></span><span></span><span></span></div>');
 
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -102,7 +205,7 @@ async function sendMessage(message) {
         if (line.startsWith("event: ")) event = line.slice(7);
         else if (line.startsWith("data: ")) data += line.slice(6);
       }
-      if (data === "[DONE]") continue;
+      if (!data || data === "[DONE]") continue;
       const payload = JSON.parse(data);
       if (event === "error") {
         wrap.classList.add("error");
@@ -111,7 +214,7 @@ async function sendMessage(message) {
       }
       answer += payload.delta;
       bubble.innerHTML = renderMarkdown(answer);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scrollToBottom();
     }
   }
 }
@@ -119,18 +222,28 @@ async function sendMessage(message) {
 composer.addEventListener("submit", async (e) => {
   e.preventDefault();
   const message = input.value.trim();
-  if (!message) return;
+  if (!message || busy) return;
   input.value = "";
+  autoResize();
+  busy = true;
   sendBtn.disabled = true;
   try {
     await sendMessage(message);
   } catch (err) {
-    addMessage("error", `오류: ${err.message}`);
+    addMessage("error", escapeHtml(`오류: ${err.message}`)).wrap.classList.add("error");
   } finally {
+    busy = false;
     sendBtn.disabled = false;
     input.focus();
+    refreshHistory();
   }
 });
+
+function autoResize() {
+  input.style.height = "auto";
+  input.style.height = `${input.scrollHeight}px`;
+}
+input.addEventListener("input", autoResize);
 
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -140,44 +253,74 @@ input.addEventListener("keydown", (e) => {
 });
 
 // ---------- 파일 업로드 ----------
+function colBadges(columns) {
+  return columns.map((c) => `<span class="badge">${escapeHtml(c)}</span>`).join("");
+}
+
+function fileCardHtml(data) {
+  return (
+    `<div class="file-card card">` +
+    `<div class="head"><span class="title">${escapeHtml(data.filename)}</span><span class="badge positive">불러옴</span></div>` +
+    `<div class="meta">${data.rows.toLocaleString()}행 × ${data.columns.length}열 · 이제 이 데이터에 대해 질문해 주세요.</div>` +
+    `<div class="cols">${colBadges(data.columns)}</div>` +
+    (data.summary ? `<details><summary>데이터 요약 보기</summary><pre>${escapeHtml(data.summary)}</pre></details>` : "") +
+    `</div>`
+  );
+}
+
+function showDataInSidebar(data) {
+  $("data-empty").hidden = true;
+  $("data-card").hidden = false;
+  $("data-name").textContent = data.filename;
+  $("data-shape").textContent = `${data.rows.toLocaleString()}행 × ${data.columns.length}열`;
+  $("data-cols").innerHTML = colBadges(data.columns);
+  $("attached").textContent = `📄 ${data.filename}`;
+}
+
+function clearDataInSidebar() {
+  $("data-empty").hidden = false;
+  $("data-card").hidden = true;
+  $("attached").textContent = "";
+}
+
 fileInput.addEventListener("change", async () => {
   const file = fileInput.files[0];
+  fileInput.value = "";
   if (!file) return;
   await ensureSession();
-  $("file-label").textContent = file.name;
-  uploadStatus.className = "status";
-  uploadStatus.textContent = "업로드 중…";
+
+  const { wrap, bubble } = addMessage("assistant", `<strong>${escapeHtml(file.name)}</strong> 업로드 중…`);
 
   const form = new FormData();
   form.append("session_id", sessionId);
   form.append("file", file);
 
-  const res = await fetch("/api/upload", { method: "POST", body: form });
-  const data = await res.json();
-  if (!res.ok) {
-    uploadStatus.className = "status error";
-    uploadStatus.textContent = data.detail || "업로드 실패";
-    return;
+  try {
+    const res = await fetch("/api/upload", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "업로드 실패");
+    bubble.innerHTML = fileCardHtml(data);
+    showDataInSidebar(data);
+    refreshHistory();
+  } catch (err) {
+    wrap.classList.add("error");
+    bubble.textContent = `업로드 실패: ${err.message}`;
   }
-
-  uploadStatus.textContent = "업로드 완료";
-  $("summary-panel").hidden = false;
-  $("summary-meta").innerHTML =
-    `<div><strong>${escapeHtml(data.filename)}</strong> · ${data.rows}행 × ${data.columns.length}열</div>` +
-    `<div class="cols">${data.columns.map(escapeHtml).join(", ")}</div>`;
-  $("summary-text").textContent = data.summary;
-  fileInput.value = "";
+  scrollToBottom();
 });
 
 // ---------- 새 대화 ----------
+// 기존 대화는 지우지 않고 대화 기록에 남겨 둔다
 $("reset-btn").addEventListener("click", async () => {
-  if (sessionId) await fetch(`/api/session/${sessionId}`, { method: "DELETE" }).catch(() => {});
-  await ensureSession(true);
-  messagesEl.innerHTML = "";
-  addMessage("assistant", "새 대화를 시작합니다. 데이터를 업로드하고 질문해 주세요.");
-  $("summary-panel").hidden = true;
-  $("file-label").textContent = "CSV / Excel 파일 선택";
-  uploadStatus.textContent = "";
+  if (busy) return;
+  await startNewChat();
 });
 
-ensureSession();
+// ---------- 시작 ----------
+(async () => {
+  // 마지막으로 보던 대화를 복원하고, 없으면 새 세션을 만든다
+  if (!(sessionId && (await loadSession(sessionId)))) {
+    await ensureSession(true);
+    await refreshHistory();
+  }
+})();
