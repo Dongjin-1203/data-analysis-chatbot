@@ -221,3 +221,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 챗봇 대화 DB와 업로드 파일
+storage/
+
+# 실습 데이터 원본 (Zenodo 10.5281/zenodo.23442538 에서 받기)
+data/*.csv
+data/*.xlsx
