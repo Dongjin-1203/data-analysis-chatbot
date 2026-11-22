@@ -18,15 +18,16 @@ def client():
 
 @pytest.fixture
 def captured(monkeypatch):
-    """llm.stream_chat를 가짜 스트림으로 바꾸고, 전달된 messages를 기록한다."""
+    """llm.stream_agent를 가짜 이벤트 스트림으로 바꾸고, 전달된 messages와 도구를 기록한다."""
     calls: list[list[dict]] = []
 
-    async def fake_stream(messages):
+    async def fake_stream(messages, tools):
         calls.append(messages)
+        assert [t.name for t in tools] == ["query_dataset", "run_python", "run_shell"]
         for piece in ["분석 ", "계획", "입니다."]:
-            yield piece
+            yield {"type": "token", "text": piece}
 
-    monkeypatch.setattr(llm, "stream_chat", fake_stream)
+    monkeypatch.setattr(llm, "stream_agent", fake_stream)
     return calls
 
 
@@ -70,7 +71,7 @@ def test_upload_then_chat_uses_data_context(client, captured):
     res = client.post("/api/chat", json={"session_id": sid, "message": "라인별 불량률 알려줘"})
     assert res.status_code == 200
     events = parse_sse(res.text)
-    deltas = [json.loads(d)["delta"] for e, d in events if e == "message" and d != "[DONE]"]
+    deltas = [json.loads(d)["text"] for e, d in events if e == "message" and d != "[DONE]"]
     assert "".join(deltas) == "분석 계획입니다."
     assert events[-1] == ("message", "[DONE]")
 
@@ -102,7 +103,6 @@ def test_chat_without_api_key_returns_error_event(client, monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "openai_api_key", "")
-    monkeypatch.setattr(llm, "_client", None)
     sid = client.post("/api/session").json()["session_id"]
     res = client.post("/api/chat", json={"session_id": sid, "message": "안녕"})
     events = parse_sse(res.text)

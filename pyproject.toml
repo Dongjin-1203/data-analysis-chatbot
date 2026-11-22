@@ -12,6 +12,9 @@ dependencies = [
     "openpyxl>=3.1",
     "python-multipart>=0.0.9",
     "pydantic-settings>=2.4",
+    "langchain>=1.5.2",
+    "langchain-openai>=1.8.5",
+    "matplotlib>=3.11.2",
 ]
 
 [dependency-groups]

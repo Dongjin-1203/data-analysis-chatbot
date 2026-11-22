@@ -22,6 +22,10 @@ uv run uvicorn app.main:app --reload
 
 브라우저에서 http://localhost:8000 을 엽니다.
 
+> **코드 실행 주의**: `run_python` 도구는 모델이 작성한 코드를 서버 PC에서 별도 프로세스로 실행합니다.
+> 시간 제한(`CODE_TIMEOUT_SEC`, 기본 30초)과 프로세스 분리만 적용되며 완전한 보안 샌드박스가 아닙니다.
+> 로컬·실습 환경에서만 사용하세요.
+
 ## 테스트
 
 ```bash
@@ -34,11 +38,14 @@ uv run pytest
 app/
   main.py           FastAPI 앱, 정적 파일 제공
   config.py         환경 설정(.env)
-  llm.py            LLM 호출 단일 지점(OpenAI SDK 스트리밍)
+  llm.py            LLM 호출 단일 지점(LangChain 에이전트, 실행 과정 스트리밍)
+  tools.py          에이전트 도구: query_dataset(데이터 조회), run_python(코드 실행)
+  executor.py       run_python 코드를 별도 프로세스에서 실행(시간 제한)
+  sandbox_runner.py 실제 코드 실행기(df 미리 로드, 출력·오류·그래프 수집)
   prompts.py        시스템 프롬프트 로드, 메시지 구성
-  sessions.py       SQLite 세션 저장소(대화 기록, 업로드 데이터) → storage/
+  sessions.py       SQLite 세션 저장소(대화 기록, 업로드 데이터, 실행 과정) → storage/
   data_summary.py   CSV/Excel 읽기 및 요약
-  routers/          /api/session, /api/upload, /api/chat(SSE)
+  routers/          /api/session(s), /api/upload, /api/chat(SSE), /api/files(그래프)
 prompts/
   system_prompt.md  시스템 프롬프트 (수정하면 다음 질문부터 바로 반영)
 static/             채팅 UI (HTML/CSS/JS)

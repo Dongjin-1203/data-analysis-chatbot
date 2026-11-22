@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,          -- user | assistant | file
     content TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    meta TEXT                    -- assistant: 도구 실행 과정(blocks) JSON
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
 """
@@ -59,13 +60,19 @@ class Session:
 
 class SessionStore:
     def __init__(self, storage_dir: str | Path) -> None:
-        self.root = Path(storage_dir)
+        # 코드 실행기는 다른 작업 폴더에서 실행되므로 경로는 항상 절대 경로로 저장한다
+        self.root = Path(storage_dir).resolve()
         self.upload_dir = self.root / "uploads"
+        self.output_root = self.root / "outputs"
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "chat.db"
         self._df_cache: dict[str, pd.DataFrame] = {}
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # 1단계에서 만든 DB에는 meta 열이 없으므로 추가한다
+            columns = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+            if "meta" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN meta TEXT")
 
     @contextmanager
     def _conn(self):
@@ -128,15 +135,25 @@ class SessionStore:
             deleted = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,)).rowcount
         self._df_cache.pop(session_id, None)
         shutil.rmtree(self.upload_dir / session_id, ignore_errors=True)
+        shutil.rmtree(self.output_root / session_id, ignore_errors=True)
+        shutil.rmtree(self.workspace_dir(session_id), ignore_errors=True)
         return deleted > 0
 
+    def workspace_dir(self, session_id: str) -> Path:
+        """터미널 명령(run_shell)을 실행하는 세션별 작업 폴더."""
+        return self.root / "workspaces" / session_id
+
+    def output_dir(self, session_id: str) -> Path:
+        """코드 실행으로 만든 그래프가 저장되는 폴더."""
+        return self.output_root / session_id
+
     # ---------- 메시지 ----------
-    def add_message(self, session_id: str, role: str, content: str) -> None:
+    def add_message(self, session_id: str, role: str, content: str, meta: dict | None = None) -> None:
         now = _now()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, now),
+                "INSERT INTO messages (session_id, role, content, created_at, meta) VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, content, now, json.dumps(meta, ensure_ascii=False) if meta else None),
             )
             conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
             if role == "user":
@@ -147,17 +164,23 @@ class SessionStore:
                     (title, session_id),
                 )
 
-    def add_turn(self, session_id: str, user: str, assistant: str) -> None:
+    def add_turn(self, session_id: str, user: str, assistant: str, blocks: list[dict] | None = None) -> None:
         self.add_message(session_id, "user", user)
-        self.add_message(session_id, "assistant", assistant)
+        self.add_message(session_id, "assistant", assistant, {"blocks": blocks} if blocks else None)
 
     def messages(self, session_id: str) -> list[dict]:
         """화면 복원용 전체 메시지(파일 업로드 기록 포함)."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id", (session_id,)
+                "SELECT role, content, meta FROM messages WHERE session_id = ? ORDER BY id", (session_id,)
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            item = {"role": r["role"], "content": r["content"]}
+            if r["meta"]:
+                item.update(json.loads(r["meta"]))
+            result.append(item)
+        return result
 
     def history(self, session_id: str, max_turns: int | None = None) -> list[dict]:
         """LLM에 보낼 최근 대화(user/assistant만)."""

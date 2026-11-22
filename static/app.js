@@ -72,7 +72,7 @@ async function loadSession(id) {
 
   for (const m of session.messages) {
     if (m.role === "user") addMessage("user", escapeHtml(m.content));
-    else if (m.role === "assistant") addMessage("assistant", renderMarkdown(m.content));
+    else if (m.role === "assistant") addMessage("assistant", m.blocks ? renderBlocks(m.blocks) : renderMarkdown(m.content));
     else if (m.role === "file") {
       const summary = session.data && session.data.filename === m.data.filename ? session.data.summary : "";
       addMessage("assistant", fileCardHtml({ ...m.data, summary }));
@@ -104,11 +104,39 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function renderInline(text) {
+function renderSpan(text) {
   return escapeHtml(text)
     .replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>')
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/^#{1,6} (.+)$/gm, "<strong>$1</strong>");
+    .replace(/^#{1,6} (.+)$/gm, '<strong class="md-heading">$1</strong>');
+}
+
+// 마크다운 표(| a | b |)를 HTML 표로 바꾸고, 나머지는 인라인 서식만 적용한다.
+function renderInline(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let i = 0;
+  const isRow = (l) => /^\s*\|.*\|\s*$/.test(l);
+  const isSep = (l) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(l);
+  const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+
+  while (i < lines.length) {
+    if (isRow(lines[i]) && i + 1 < lines.length && isSep(lines[i + 1])) {
+      const aligns = cells(lines[i + 1]).map((c) => (c.endsWith(":") ? "right" : "left"));
+      const head = cells(lines[i]).map((c, k) => `<th style="text-align:${aligns[k] || "left"}">${renderSpan(c)}</th>`).join("");
+      const body = [];
+      i += 2;
+      while (i < lines.length && isRow(lines[i])) {
+        body.push(`<tr>${cells(lines[i]).map((c, k) => `<td style="text-align:${aligns[k] || "left"}">${renderSpan(c)}</td>`).join("")}</tr>`);
+        i++;
+      }
+      out.push(`<div class="md-table"><table><thead><tr>${head}</tr></thead><tbody>${body.join("")}</tbody></table></div>`);
+      continue;
+    }
+    out.push(renderSpan(lines[i]) + (i < lines.length - 1 ? "\n" : ""));
+    i++;
+  }
+  return out.join("");
 }
 
 // 코드블록(```)과 일반 텍스트를 나눠 렌더링한다. 스트리밍 중 닫히지 않은 블록도 처리한다.
@@ -127,6 +155,78 @@ function renderMarkdown(text) {
       );
     })
     .join("");
+}
+
+// ---------- 에이전트 실행 과정 (텍스트 + 도구 카드) ----------
+const TOOL_LABELS = { query_dataset: "데이터 조회", run_python: "코드 실행", run_shell: "터미널 명령" };
+
+function toolStatus(block) {
+  if (block.status === "running") return ["cautionary", "실행 중"];
+  const failed =
+    block.status === "error" ||
+    (block.artifact && block.artifact.ok === false) ||
+    (typeof block.output === "string" && block.output.startsWith("[조회 실패]"));
+  return failed ? ["negative", "실패"] : ["positive", "완료"];
+}
+
+function toolCardHtml(block) {
+  const [variant, label] = toolStatus(block);
+  const name = TOOL_LABELS[block.name] || block.name;
+  const args = block.args || {};
+  let input;
+  if (block.name === "run_python") {
+    input = `<details${block.status === "running" ? " open" : ""}><summary>실행한 코드</summary><pre class="tool-code">${escapeHtml(args.code || "")}</pre></details>`;
+  } else if (block.name === "run_shell") {
+    // pip install 이 uv pip install 로 바뀐 경우 실제 실행한 명령을 보여준다
+    const command = (block.artifact && block.artifact.command) || args.command || "";
+    input = `<pre class="tool-code">$ ${escapeHtml(command)}</pre>`;
+  } else {
+    input = `<div class="tool-args">${escapeHtml(Object.keys(args).length ? JSON.stringify(args, null, 0) : "열 정보 조회")}</div>`;
+  }
+
+  let result = "";
+  if (block.status !== "running") {
+    const art = block.artifact;
+    if (art) {
+      const text = [art.output, art.error ? `오류: ${art.error}` : ""].filter((t) => t && t.trim()).join("\n");
+      if (text) result += `<pre class="tool-output">${escapeHtml(text)}</pre>`;
+      for (const src of art.images || []) result += `<img class="tool-image" src="${escapeHtml(src)}" alt="실행 결과 그래프" />`;
+    } else if (block.output) {
+      result += `<pre class="tool-output">${escapeHtml(block.output)}</pre>`;
+    }
+  }
+
+  return (
+    `<div class="tool-card card">` +
+    `<div class="tool-head"><span class="tool-name">${escapeHtml(name)}</span><span class="badge ${variant}">${label}</span></div>` +
+    input +
+    result +
+    `</div>`
+  );
+}
+
+function renderBlocks(blocks) {
+  return blocks
+    .map((b) => {
+      if (b.type === "text") return `<div class="text-block">${renderMarkdown(b.text)}</div>`;
+      if (b.type === "tool") return toolCardHtml(b);
+      if (b.type === "error") return `<div class="inline-error">${escapeHtml(b.text)}</div>`;
+      return "";
+    })
+    .join("");
+}
+
+function applyEvent(blocks, ev) {
+  if (ev.type === "token") {
+    const last = blocks[blocks.length - 1];
+    if (last && last.type === "text") last.text += ev.text;
+    else blocks.push({ type: "text", text: ev.text });
+  } else if (ev.type === "tool_start") {
+    blocks.push({ type: "tool", id: ev.id, name: ev.name, args: ev.args, status: "running" });
+  } else if (ev.type === "tool_end") {
+    const block = blocks.find((b) => b.type === "tool" && b.id === ev.id);
+    if (block) Object.assign(block, { status: ev.status === "error" ? "error" : "done", output: ev.output, artifact: ev.artifact });
+  }
 }
 
 function scrollToBottom() {
@@ -188,7 +288,8 @@ async function sendMessage(message) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let answer = "";
+  const blocks = [];
+  const typing = '<div class="typing"><span></span><span></span><span></span></div>';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -208,12 +309,18 @@ async function sendMessage(message) {
       if (!data || data === "[DONE]") continue;
       const payload = JSON.parse(data);
       if (event === "error") {
-        wrap.classList.add("error");
-        bubble.textContent = payload.message;
+        if (!blocks.length) {
+          wrap.classList.add("error");
+          bubble.textContent = payload.message;
+        } else {
+          blocks.push({ type: "error", text: payload.message });
+          bubble.innerHTML = renderBlocks(blocks);
+        }
         return;
       }
-      answer += payload.delta;
-      bubble.innerHTML = renderMarkdown(answer);
+      applyEvent(blocks, payload);
+      const running = blocks.some((b) => b.type === "tool" && b.status === "running");
+      bubble.innerHTML = renderBlocks(blocks) + (running ? typing : "");
       scrollToBottom();
     }
   }
